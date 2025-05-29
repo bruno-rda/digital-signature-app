@@ -191,3 +191,8 @@ class ECDSA(DigitalSignature):
             return True
         except InvalidSignature:
             return False
+        
+SUPPORTED_KEY_ALGORITHMS = {
+    'RSA': RSA, 
+    'ECDSA': ECDSA
+}

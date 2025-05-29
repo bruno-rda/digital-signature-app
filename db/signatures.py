@@ -14,6 +14,7 @@ class SignedDocument(BaseModel):
     document_name: str
     document_hash_hex: str
     signature_hex: str
+    key_id: str
 
     @property
     def signed_at_date(self) -> str:
@@ -25,7 +26,8 @@ def save_signature(
     username: str,
     document_name: str,
     document_hash_hex: str,
-    signature_hex: str
+    signature_hex: str,
+    key_id: str
 ) -> bool:
     if not user_exists(username):
         raise Exception('User does not exist')
@@ -36,7 +38,8 @@ def save_signature(
             signed_at=datetime.now().timestamp(),
             document_name=document_name,
             document_hash_hex=document_hash_hex,
-            signature_hex=signature_hex
+            signature_hex=signature_hex,
+            key_id=key_id
         )
         
         collection.insert_one(signed_document.model_dump())
