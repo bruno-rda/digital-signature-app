@@ -1,49 +1,83 @@
 import os
-from pymongo import MongoClient
-from utils.helpers import sha_256
+from supabase import create_client, Client
 
-client = MongoClient(os.getenv('MONGO_URI'))
-print(os.getenv('MONGO_URI'))
-print(os.getenv('MONGO_DB_NAME'))
-db = client[os.getenv('MONGO_DB_NAME')]
-collection = db['users']
+client: Client = create_client(
+    supabase_url=os.getenv('SUPABASE_URL'),
+    supabase_key=os.getenv('SUPABASE_KEY')
+)
+table = client.table('user_profiles')
 
-def get_usernames() -> list[str]:
-    return [user['username'] for user in collection.find()]
-
-def user_exists(username: str) -> bool:
-    return bool(
-        collection.find_one({
-            'username': username,
-        })
+def set_username(user_id: str, username: str) -> bool:
+    response = (
+        table
+        .insert({'user_id': user_id, 'username': username})
+        .execute()
     )
 
-def signup_user(username: str, password: str):
-    if user_exists(username):
-        raise Exception('Username is taken')
+    if bool(response.data):
+        return True
     
-    password_hash_hex = sha_256(password.encode('utf-8')).hex()
+    raise Exception(f'Failed to set username')
 
-    # TODO: Add email verification
-    collection.insert_one({
-        'username': username,
-        'password_hash_hex': password_hash_hex
-    })
+def is_valid_username(username: str) -> bool:
+    length_restriction = 3 <= len(username) <= 16
+    special_characters_restriction = all(
+        char.isalnum() or char == '_' 
+        for char in username
+    )
 
-def login_user(username: str, password: str):
-    if not user_exists(username):
-        raise Exception('User does not exist')
+    return length_restriction and special_characters_restriction
+
+def get_username(user_id: str) -> str:
+    response = (
+        table
+        .select('username')
+        .eq('user_id', user_id)
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]['username']
     
-    password_hash_hex = sha_256(password.encode('utf-8')).hex()
+    return ''
 
-    user = collection.find_one({'username': username})
-    if user['password_hash_hex'] != password_hash_hex:
-        raise Exception('Invalid password')
-
-def update_password(username: str, new_password: str):
-    if not user_exists(username):
-        raise Exception('User does not exist')
+def get_all_usernames() -> dict[str, str]:
+    response = (
+        table
+        .select('*')
+        .execute()
+    )
     
-    new_password_hash_hex = sha_256(new_password.encode('utf-8')).hex()
+    return {
+        user['username']: user['user_id']
+        for user in response.data
+    }
 
-    # TODO: Set new password hex
+def sign_in() -> str:
+    response = client.auth.sign_in_with_oauth(
+        {'provider': 'google'}
+    )
+    
+    return response.url
+
+def exchange_code_for_session(auth_code: str) -> tuple[str, str]:
+    response = client.auth.exchange_code_for_session(
+        {'auth_code': auth_code}
+    )
+    
+    if response:
+        return (
+            response.user.id,
+            response.session.refresh_token
+        )
+    
+    raise Exception('Failed to get user id from auth code')
+
+def refresh_session(refresh_token: str):
+    response = client.auth.refresh_session(refresh_token)
+    
+    if response:
+        return response.user.id
+
+def sign_out() -> None:
+    client.auth.sign_out()

@@ -4,24 +4,57 @@ load_dotenv()
 import os
 import time
 import streamlit as st
+from streamlit_cookies_controller import CookieController
 from signing.digital_signature import SUPPORTED_KEY_ALGORITHMS
-from db.auth import signup_user, login_user, get_usernames
-from db.signatures import save_signature, get_signatures, SignedDocument
-from db.user_profile import (
+from db.auth import (
+    set_username,
+    is_valid_username,
+    get_username,
+    get_all_usernames, 
+    sign_in, 
+    refresh_session,
+    sign_out, 
+    exchange_code_for_session
+)
+from db.signed_documents import save_signature, get_signatures, SignedDocument
+from db.public_keys import (
     get_user_keys,
     add_public_key,
     rename_public_key,
     deactivate_public_key,
-    delete_public_key,
     PublicKey
 )
 
+controller = CookieController()
+
 # Define re-usable logic within the app
 def reload_user_keys():
-    st.session_state.user_keys = get_user_keys(st.session_state.username)
+    st.session_state.user_keys = get_user_keys(user_id=st.session_state.user_id)
 
 def reload_user_signatures():
-    st.session_state.user_signatures = get_signatures(st.session_state.username)
+    st.session_state.user_signatures = get_signatures(user_id=st.session_state.user_id)
+
+def sign_in_process(user_id: str):
+    st.session_state.user_id = user_id
+                
+    # Initialize user info
+    st.session_state.user_keys = []
+    st.session_state.user_signatures = []
+
+    # Get the username for the user
+    username = get_username(user_id)
+    if username:
+        st.session_state.current_page = 'home'
+        st.session_state.username = username
+        
+        # Reload user info to get the keys and signatures
+        reload_user_keys()
+        reload_user_signatures()
+    else:    
+        st.session_state.current_page = 'set_username'
+        st.session_state.username = ''
+
+    st.rerun()
 
 def generate_keys():
     st.session_state.encryption_keys = (
@@ -52,105 +85,133 @@ def render_key_details(public_key: PublicKey):
 
 # Initialize the current page at authentication
 if 'current_page' not in st.session_state:
-    st.session_state.current_page = 'authentication'
+    st.session_state.current_page = 'try_cookies'
 
 match st.session_state.current_page:
+    case 'try_cookies':
+        if refresh_token := controller.get('refresh_token'):
+            try:
+                user_id = refresh_session(refresh_token)
+                if user_id: sign_in_process(user_id)
+            except Exception as e:
+                controller.remove('refresh_token')
+        
+        # If there are no cookies, they are still loading
+        elif controller.getAll().keys():
+            st.session_state.current_page = 'authentication'
+            st.rerun()
+
     case 'authentication':
-        log_in, sign_up = st.tabs(['Log In', 'Sign Up'])
+        st.session_state.redirect_url = None
+        st.markdown(
+            """
+            <style>
+            /* Center the button’s container and set a fixed width */
+            div.stButton {
+                width: 250px;       /* adjust as needed for desired button width */
+                margin: 0 auto;     /* centers the container horizontally */
+                margin-top: 200px; 
+            }
 
-        with log_in:
-            st.title('Log In')
-            st.markdown('Log in to existing account')
-            st.markdown("<br>", unsafe_allow_html=True)
+            /* Style the button with flex so logo and text stay centered together */
+            div.stButton > button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background-color: #ffffff;
+                color: #444444;
+                border: 1px solid #dddddd;
+                height: 80px;       /* keep the same vertical height */
+                width: 100%;        /* fill the 320px container */
+                font-size: 22px;
+                padding: 0;         /* remove extra padding */
+            }
 
-            st.text_input(
-                'Username',
-                placeholder='Username',
-                label_visibility='collapsed',
-                key='login_username'
+            /* Insert Google “G” logo before the button text */
+            div.stButton > button::before {
+                content: "";
+                background-image: url('https://developers.google.com/identity/images/g-logo.png');
+                background-repeat: no-repeat;
+                background-size: 24px 24px;
+                width: 24px;
+                height: 24px;
+                margin-right: 20px; /* space between logo and text */
+                display: inline-block;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Render the single button; show a success message when clicked
+        if st.button('Continue with Google'):
+            st.session_state.redirect_url = sign_in()
+
+            st.markdown(f'''
+                <meta http-equiv="refresh" content="0; url={st.session_state.redirect_url}" />''', 
+                unsafe_allow_html=True
             )
-            st.text_input(
-                'Password',
-                placeholder='Password', 
-                label_visibility='collapsed',
-                type='password',
-                key='login_password'
-            )
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button('Log In', use_container_width=True, type='primary'):
+        if auth_code := st.query_params.get('code'):
+            # Clear the auth code once its used
+            st.query_params.clear()
+
+            try:
+                user_id, refresh_token = exchange_code_for_session(auth_code)
+                controller.set('refresh_token', refresh_token)
+                sign_in_process(user_id)
+            except Exception as e:
+                st.error(f'Error: {e}')
+
+    case 'set_username':
+        st.title('Set Username')
+        st.markdown(
+            '#### Set a username to identify yourself in the app',
+            unsafe_allow_html=True
+        )
+        
+        st.text_input(
+            'Username',
+            placeholder='Username',
+            label_visibility='collapsed',
+            key='selected_username'
+        )
+        
+        if st.button('Set Username', use_container_width=True, type='primary'):
+            if not st.session_state.selected_username:
+                st.error('Please enter a username')
+            elif not is_valid_username(st.session_state.selected_username):
+                st.error('Username must be between 3 and 16 characters and can only contain letters, numbers, and underscores')
+            else:
                 try:
-                    login_user(
-                        st.session_state.login_username,
-                        st.session_state.login_password
+                    set_username(
+                        user_id=st.session_state.user_id,
+                        username=st.session_state.selected_username
                     )
-                    
-                    # Set new vars
+
                     st.session_state.current_page = 'home'
-                    st.session_state.username = st.session_state.login_username
-                    reload_user_keys() # Reload user info to get the encryption keys
-                    
-                    # Delete unnecessary vars
-                    del st.session_state.login_username
-                    del st.session_state.login_password
+                    st.session_state.username = st.session_state.selected_username
+                    del st.session_state.selected_username
 
-                    st.success('Logged In Successfully!')
-                    st.rerun()
-                except Exception as e:
-                    st.error(f'Error: {e}')
-                    raise Exception(e)
-
-        with sign_up:
-            st.title('Sign Up')
-            st.markdown('Create a new account')
-            st.markdown('<br>', unsafe_allow_html=True)
-
-            st.text_input(
-                'Username',
-                placeholder='Username',
-                label_visibility='collapsed',
-                key='signup_username'
-            )
-            st.text_input(
-                'Password',
-                placeholder='Password', 
-                label_visibility='collapsed',
-                type='password',
-                key='signup_password'
-            )
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button('Sign Up', use_container_width=True, type='primary'):
-                try:
-                    signup_user(
-                        st.session_state.signup_username,
-                        st.session_state.signup_password
-                    )
-                    # Set new vars
-                    st.session_state.key_algorithm = list(SUPPORTED_KEY_ALGORITHMS.keys())[0]
-                    st.session_state.current_page = 'home'
-                    st.session_state.username = st.session_state.signup_username
-                    reload_user_keys()
-                    
-                    # Delete unnecessary vars
-                    del st.session_state.signup_username
-                    del st.session_state.signup_password
-
-                    st.success('Account Created Succesfully!')
                     st.rerun()
                 except Exception as e:
                     st.error(f'Error: {e}')
 
     case 'home':
+        st.sidebar.markdown('# Digital Signature App')
+
         page = st.sidebar.radio(
-            'Select an option', 
+            'Sidebar', 
             [
                 'Signature History', 
                 'Sign Document', 
                 'Verify Signature', 
-                'Encryption Keys'
-            ]
+                'Encryption Keys',
+                'Logout'
+            ],
+            label_visibility='collapsed'
         )
+
 
         if page == 'Signature History':
             st.title('Signature History')
@@ -178,7 +239,7 @@ match st.session_state.current_page:
             render_key_details(key)
 
             signed_documents = [
-                sig for sig in get_signatures(st.session_state.username)
+                sig for sig in get_signatures(user_id=st.session_state.user_id)
                 if sig.key_id == key.id
             ]
 
@@ -196,9 +257,14 @@ match st.session_state.current_page:
                 unsafe_allow_html=True
             )
 
-            if not st.session_state.user_keys:
+            user_keys = st.session_state.user_keys
+
+            if not any(
+                user_keys[key_name].is_active
+                for key_name in user_keys
+            ):
                 st.warning(
-                    'You currently have no encryption keys\n\n'
+                    'You currently have no active encryption keys\n\n'
                     'Go to tab "Encryption Keys / Create Key" to create a key', 
                     width='stretch'
                 )
@@ -209,8 +275,6 @@ match st.session_state.current_page:
                 type=['pdf', 'docx', 'txt'], 
                 key='sign_document_file'
             )
-
-            user_keys = st.session_state.user_keys
 
             st.selectbox(
                 'Select key',
@@ -255,7 +319,6 @@ match st.session_state.current_page:
 
                         # Save the signature to the database
                         save_signature(
-                            username=st.session_state.username,
                             document_name=st.session_state.sign_document_file.name,
                             document_hash_hex=signature_data.document_hash_hex,
                             signature_hex=signature_data.signature_hex,
@@ -267,9 +330,12 @@ match st.session_state.current_page:
                         st.error(f'Error: {e}')
 
         elif page == 'Verify Signature':
+            if 'all_usernames' not in st.session_state:
+                st.session_state.all_usernames = get_all_usernames()
+
             st.title('Verify Signature')
             st.markdown(
-                '#### Check if a document was signed by a specific person <br>',
+                '#### Check if a document was signed by a specific user <br>',
                 unsafe_allow_html=True
             )
 
@@ -286,7 +352,7 @@ match st.session_state.current_page:
 
             st.selectbox(
                 'Select a user',
-                options=get_usernames(),
+                options=st.session_state.all_usernames,
                 key='verify_signature_user'
             )
 
@@ -300,7 +366,9 @@ match st.session_state.current_page:
                 else:
                     # Get current public key and signature
                     signer_username = st.session_state.verify_signature_user
-                    signer_keys = get_user_keys(signer_username)
+                    signer_keys = get_user_keys(
+                        user_id=st.session_state.all_usernames[signer_username]
+                    )
                     signature_hex = st.session_state.verify_signature_signature
                     
                     # Read file buffers
@@ -325,7 +393,7 @@ match st.session_state.current_page:
                         st.info(f'Document was not signed by {signer_username}!')
 
         elif page == 'Encryption Keys':
-            st.title('Keys')
+            st.title('Encryption Keys')
 
             create_key, manage_keys = st.tabs(['Create Key', 'Manage Keys'])
 
@@ -368,13 +436,17 @@ match st.session_state.current_page:
             
             with manage_keys:
                 st.markdown(
-                    '#### Edit or delete encryption keys <br>',
+                    '#### Edit or deactivate active encryption keys <br>',
                     unsafe_allow_html=True
                 )
+                user_keys = st.session_state.user_keys
 
-                if not st.session_state.user_keys:
+                if not any(
+                    user_keys[key_name].is_active
+                    for key_name in user_keys
+                ):
                     st.warning(
-                        'You currently have no encryption keys\n\n'
+                        'You currently have no active encryption keys\n\n'
                         'Go to tab "Encryption Keys / Create Key" to create a key', 
                         width='stretch'
                     )
@@ -382,7 +454,11 @@ match st.session_state.current_page:
 
                 st.selectbox(
                     'Select an encryption key',
-                    options=st.session_state.user_keys,
+                    options=[
+                        key_name 
+                        for key_name in user_keys 
+                        if user_keys[key_name].is_active
+                    ],
                     key='selected_user_key'
                 )
 
@@ -395,13 +471,16 @@ match st.session_state.current_page:
 
                 key = st.session_state.user_keys[st.session_state.selected_user_key]
 
-                c1, c2, c3 = st.columns([10, 10, 10])
+                c1, c2 = st.columns([10, 10])
                 with c1: 
                     rename_btn = st.button('Rename', use_container_width=True)
                 with c2: 
-                    deactivate_btn = st.button('Deactivate', use_container_width=True)
-                with c3: 
-                    delete_btn = st.button('Delete', use_container_width=True, type='primary')
+                    deactivate_btn = st.button(
+                        'Deactivate', 
+                        help='Deactivate the key to prevent it from being used to sign documents',
+                        use_container_width=True,
+                        type='primary'
+                    )
                 
                 if rename_btn:
                     if not st.session_state.selected_new_key_name:
@@ -409,7 +488,7 @@ match st.session_state.current_page:
                     else:
                         try:
                             rename_public_key(
-                                username=st.session_state.username,
+                                user_id=st.session_state.user_id,
                                 new_key_name=st.session_state.selected_new_key_name,
                                 key_id=key.id
                             )
@@ -429,8 +508,9 @@ match st.session_state.current_page:
                 elif deactivate_btn:
                     try:
                         deactivate_public_key(
-                            username=st.session_state.username,
-                            key_id=key.id
+                            user_id=st.session_state.user_id,
+                            key_id=key.id,
+                            key_name=key.name
                         )
                     
                         del st.session_state.selected_new_key_name
@@ -442,23 +522,21 @@ match st.session_state.current_page:
                         st.rerun()
                     except Exception as e:
                         st.error(f'Error: {e}')
+            
+        elif page == 'Logout':
+            try:
+                sign_out()
+                st.session_state.current_page = 'authentication'
+                controller.remove('refresh_token')
 
-                elif delete_btn:
-                    try:
-                        delete_public_key(
-                            username=st.session_state.username,
-                            key_id=key.id
-                        )
-
-                        del st.session_state.selected_new_key_name
-                        st.success('Key deleted succesfully!')
-                        reload_user_keys()
-                        
-                        # Wait for re-render
-                        time.sleep(2.5)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f'Error: {e}')
+                # Reset user info
+                st.session_state.user_id = None
+                st.session_state.username = None
+                st.session_state.user_keys = []
+                st.session_state.user_signatures = []
+                st.rerun()
+            except Exception as e:
+                st.error(f'Error: {e}')
         
     case 'download_key':
         st.markdown(
@@ -495,11 +573,15 @@ match st.session_state.current_page:
             with c1:
                 cancel_btn = st.button('Abort', use_container_width=True)
             with c2:
-                continue_btn = st.button('Save', use_container_width=True)
+                continue_btn = st.button(
+                    'Save', 
+                    use_container_width=True,
+                    help='Save the public key to your account after downloading private key'
+                )
         
         if continue_btn:
             add_public_key(
-                username=st.session_state.username,
+                user_id=st.session_state.user_id,
                 public_pem_hex=st.session_state.encryption_keys.public_pem_hex,
                 key_name=st.session_state.key_name,
                 key_algorithm=st.session_state.key_algorithm
