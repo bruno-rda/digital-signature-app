@@ -1,5 +1,4 @@
 import os
-from uuid import uuid4
 from pydantic import BaseModel
 from typing import Literal, Optional
 from datetime import datetime
