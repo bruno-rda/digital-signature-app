@@ -52,32 +52,3 @@ def get_all_usernames() -> dict[str, str]:
         user['username']: user['user_id']
         for user in response.data
     }
-
-def sign_in() -> str:
-    response = client.auth.sign_in_with_oauth(
-        {'provider': 'google'}
-    )
-    
-    return response.url
-
-def exchange_code_for_session(auth_code: str) -> tuple[str, str]:
-    response = client.auth.exchange_code_for_session(
-        {'auth_code': auth_code}
-    )
-    
-    if response:
-        return (
-            response.user.id,
-            response.session.refresh_token
-        )
-    
-    raise Exception('Failed to get user id from auth code')
-
-def refresh_session(refresh_token: str):
-    response = client.auth.refresh_session(refresh_token)
-    
-    if response:
-        return response.user.id
-
-def sign_out() -> None:
-    client.auth.sign_out()

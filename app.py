@@ -3,17 +3,13 @@ load_dotenv()
 
 import time
 import streamlit as st
-from streamlit_cookies_controller import CookieController
+from streamlit_supabase_auth import login_form, logout_button
 from signing.digital_signature import SUPPORTED_KEY_ALGORITHMS
 from db.auth import (
     set_username,
     is_valid_username,
     get_username,
-    get_all_usernames, 
-    sign_in, 
-    refresh_session,
-    sign_out, 
-    exchange_code_for_session
+    get_all_usernames
 )
 from db.signed_documents import save_signature, get_signatures, SignedDocument
 from db.public_keys import (
@@ -23,8 +19,6 @@ from db.public_keys import (
     deactivate_public_key,
     PublicKey
 )
-
-controller = CookieController()
 
 # Define re-usable logic within the app
 def reload_user_keys():
@@ -84,83 +78,16 @@ def render_key_details(public_key: PublicKey):
 
 # Initialize the current page at authentication
 if 'current_page' not in st.session_state:
-    st.session_state.current_page = 'try_cookies'
+    st.session_state.current_page = 'authentication'
 
 match st.session_state.current_page:
-    case 'try_cookies':
-        if refresh_token := controller.get('refresh_token'):
-            try:
-                user_id = refresh_session(refresh_token)
-                if user_id: sign_in_process(user_id)
-            except Exception as e:
-                controller.remove('refresh_token')
-        
-        # If there are no cookies, they are still loading
-        elif controller.getAll().keys():
-            st.session_state.current_page = 'authentication'
-            st.rerun()
-
     case 'authentication':
-        st.session_state.redirect_url = None
-        st.markdown(
-            """
-            <style>
-            /* Center the button’s container and set a fixed width */
-            div.stButton {
-                width: 250px;       /* adjust as needed for desired button width */
-                margin: 0 auto;     /* centers the container horizontally */
-                margin-top: 200px; 
-            }
+        session = login_form(providers=['google'])
 
-            /* Style the button with flex so logo and text stay centered together */
-            div.stButton > button {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background-color: #ffffff;
-                color: #444444;
-                border: 1px solid #dddddd;
-                height: 80px;       /* keep the same vertical height */
-                width: 100%;        /* fill the 320px container */
-                font-size: 22px;
-                padding: 0;         /* remove extra padding */
-            }
-
-            /* Insert Google “G” logo before the button text */
-            div.stButton > button::before {
-                content: "";
-                background-image: url('https://developers.google.com/identity/images/g-logo.png');
-                background-repeat: no-repeat;
-                background-size: 24px 24px;
-                width: 24px;
-                height: 24px;
-                margin-right: 20px; /* space between logo and text */
-                display: inline-block;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Render the single button; show a success message when clicked
-        if st.button('Continue with Google'):
-            st.session_state.redirect_url = sign_in()
-
-            st.markdown(f'''
-                <meta http-equiv="refresh" content="0; url={st.session_state.redirect_url}" />''', 
-                unsafe_allow_html=True
-            )
-
-        if auth_code := st.query_params.get('code'):
-            # Clear the auth code once its used
+        if session:
+            user_id = session['user']['id']
             st.query_params.clear()
-
-            try:
-                user_id, refresh_token = exchange_code_for_session(auth_code)
-                controller.set('refresh_token', refresh_token)
-                sign_in_process(user_id)
-            except Exception as e:
-                st.error(f'Error: {e}')
+            sign_in_process(user_id)
 
     case 'set_username':
         st.title('Set Username')
@@ -205,11 +132,27 @@ match st.session_state.current_page:
                 'Signature History', 
                 'Sign Document', 
                 'Verify Signature', 
-                'Encryption Keys',
-                'Logout'
+                'Encryption Keys'
             ],
             label_visibility='collapsed'
         )
+
+        with st.sidebar:
+            logout_button()
+
+        session = login_form(providers=['google'])
+        if not session: 
+            try:
+                st.session_state.current_page = 'authentication'
+
+                # Reset user info
+                st.session_state.user_id = None
+                st.session_state.username = None
+                st.session_state.user_keys = []
+                st.session_state.user_signatures = []
+                st.rerun()
+            except Exception as e:
+                st.error(f'Error: {e}')
 
 
         if page == 'Signature History':
@@ -522,20 +465,6 @@ match st.session_state.current_page:
                     except Exception as e:
                         st.error(f'Error: {e}')
             
-        elif page == 'Logout':
-            try:
-                sign_out()
-                st.session_state.current_page = 'authentication'
-                controller.remove('refresh_token')
-
-                # Reset user info
-                st.session_state.user_id = None
-                st.session_state.username = None
-                st.session_state.user_keys = []
-                st.session_state.user_signatures = []
-                st.rerun()
-            except Exception as e:
-                st.error(f'Error: {e}')
         
     case 'download_key':
         st.markdown(
