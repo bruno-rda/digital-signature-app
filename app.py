@@ -14,6 +14,7 @@ from db.auth import (
 from db.signed_documents import save_signature, get_signatures, SignedDocument
 from db.public_keys import (
     get_user_keys,
+    can_add_public_key,
     add_public_key,
     rename_public_key,
     deactivate_public_key,
@@ -371,6 +372,11 @@ match st.session_state.current_page:
                         st.error('Assign a name to the key')
                     elif not st.session_state.selected_key_algorithm:
                         st.error('Select a key generation algorithm')
+                    elif not can_add_public_key(
+                        user_id=st.session_state.user_id,
+                        key_algorithm=st.session_state.key_algorithm
+                    ):
+                        st.error('You can only have one active key per algorithm')
                     else:
                         st.session_state.current_page = 'download_key'
                         generate_keys()

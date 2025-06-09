@@ -68,6 +68,24 @@ def get_user_keys(user_id: str) -> dict[str, PublicKey]:
         for key in user_info.public_keys
     }
 
+def can_add_public_key(
+    user_id: str, 
+    key_algorithm: Literal['RSA', 'ECDSA']
+) -> bool:
+    response = (
+        table
+        .select('*')
+        .eq('user_id', user_id)
+        .eq('key_algorithm', key_algorithm)
+        .eq('is_active', True)
+        .execute()
+    )
+
+    if len(response.data) == 1:
+        return False
+    
+    return True
+
 def add_public_key(
     user_id: str, 
     public_pem_hex: str,
@@ -80,16 +98,7 @@ def add_public_key(
     '''
     
     try:
-        response = (
-            table
-            .select('*')
-            .eq('user_id', user_id)
-            .eq('key_algorithm', key_algorithm)
-            .eq('is_active', True)
-            .execute()
-        )
-
-        if len(response.data) > 0:
+        if not can_add_public_key(user_id, key_algorithm):
             raise Exception('You can only have one active key per algorithm')
 
         public_key = PublicKey(
