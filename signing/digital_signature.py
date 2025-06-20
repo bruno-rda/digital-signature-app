@@ -17,14 +17,28 @@ class SignatureData:
     signature_hex: str
 
 class DigitalSignature:    
-    def generate_keys(self) -> Keys:
+    def _generate_key_pair(self):
+        '''Generate a private/public key pair.'''
         raise NotImplementedError
     
-    def _serialize_keys(
-        self,
-        private_key: bytes,
-        public_key: bytes
-    ) -> Keys:
+    def _sign_hash(self, private_key, document_hash: bytes) -> bytes:
+        '''Sign a document hash using the private key.'''
+        raise NotImplementedError
+    
+    def _verify_hash_signature(
+        self, 
+        public_key, 
+        document_hash: bytes, 
+        signature: bytes
+    ) -> bool:
+        '''Verify a signature against a document hash.'''
+        raise NotImplementedError
+    
+    def generate_keys(self) -> Keys:
+        private_key, public_key = self._generate_key_pair()
+        return self._serialize_keys(private_key, public_key)
+    
+    def _serialize_keys(self, private_key, public_key) -> Keys:
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -40,13 +54,31 @@ class DigitalSignature:
             public_pem_hex=public_pem.hex(),
             private_pem=private_pem
         )
-        
+    
+    def _load_private_key(self, private_pem: bytes):
+        return serialization.load_pem_private_key(
+            private_pem, 
+            password=None
+        )
+    
+    def _load_public_key(self, public_pem_hex: str):
+        public_pem = bytes.fromhex(public_pem_hex)
+        return serialization.load_pem_public_key(public_pem)
+    
     def sign_document(
         self,
         private_pem: bytes,
         document: bytes,
     ) -> SignatureData:
-        raise NotImplementedError
+        private_key = self._load_private_key(private_pem)
+        document_hash = sha_256(document)
+        
+        signature = self._sign_hash(private_key, document_hash)
+        
+        return SignatureData(
+            document_hash_hex=document_hash.hex(),
+            signature_hex=signature.hex()
+        )
     
     def verify_signature(
         self,
@@ -54,137 +86,89 @@ class DigitalSignature:
         document: bytes,
         signature_hex: str
     ) -> bool:
-        raise NotImplementedError
+        try:
+            public_key = self._load_public_key(public_pem_hex)
+            signature = bytes.fromhex(signature_hex)
+            document_hash = sha_256(document)
+            
+            return self._verify_hash_signature(
+                public_key, 
+                document_hash, 
+                signature
+            )
+        except ...:
+            return False
 
 
 class RSA(DigitalSignature):
-    def __init__(self, key_size=2048):
-        super().__init__()
+    def __init__(self, key_size: int = 2048):
         self.key_size = key_size
 
-    def generate_keys(self):
+    def _generate_key_pair(self):
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=self.key_size,
         )
         public_key = private_key.public_key()
-
-        return self._serialize_keys(
-            private_key=private_key,
-            public_key=public_key
-        )
+        return private_key, public_key
     
-    def sign_document(
-        self, 
-        private_pem: bytes, 
-        document: bytes
-    ) -> SignatureData:
-        # Load the private key
-        private_key = serialization.load_pem_private_key(
-            private_pem, 
-            password=None
-        )
-
-        document_hash = sha_256(document)
-        signature = private_key.sign(
-            document,
+    def _sign_hash(self, private_key, document_hash: bytes) -> bytes:
+        return private_key.sign(
+            document_hash,
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
                 salt_length=padding.PSS.MAX_LENGTH
             ),
-            hashes.SHA256()
-        )
-        
-        return SignatureData(
-            document_hash_hex=document_hash.hex(),
-            signature_hex=signature.hex()
+            Prehashed(hashes.SHA256())
         )
     
-    def verify_signature(
-        self,
-        public_pem_hex: str,
-        document: bytes,
-        signature_hex: str
+    def _verify_hash_signature(
+        self, 
+        public_key, 
+        document_hash: bytes, 
+        signature: bytes
     ) -> bool:
-        # Convert the public key and signature to bytes
-        public_pem = bytes.fromhex(public_pem_hex)
-        signature = bytes.fromhex(signature_hex)
-
-        # Load the public key
-        public_key = serialization.load_pem_public_key(
-            public_pem
-        )
-
-        # Verify the signature
         try:
             public_key.verify(
                 signature,
-                document,
+                document_hash,
                 padding.PSS(
                     mgf=padding.MGF1(hashes.SHA256()),
                     salt_length=padding.PSS.MAX_LENGTH
                 ),
-                hashes.SHA256()
+                Prehashed(hashes.SHA256())
             )
             return True
         except InvalidSignature:
             return False
 
+
 class ECDSA(DigitalSignature):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, curve=None):
+        self.curve = curve or ec.SECP384R1()
 
-    def generate_keys(self):
-        private_key = ec.generate_private_key(
-            ec.SECP384R1()
-        )
+    def _generate_key_pair(self):
+        private_key = ec.generate_private_key(self.curve)
         public_key = private_key.public_key()
+        return private_key, public_key
 
-        return self._serialize_keys(
-            private_key=private_key,
-            public_key=public_key
-        )
-
-    def sign_document(
-        self, 
-        private_pem: bytes, 
-        document: bytes
-    ) -> SignatureData:
-        # Load the private key
-        private_key = serialization.load_pem_private_key(
-            private_pem, 
-            password=None
-        )
-
-        document_hash = sha_256(document)
-        signature = private_key.sign(
+    def _sign_hash(self, private_key, document_hash: bytes) -> bytes:
+        return private_key.sign(
             document_hash,
             ec.ECDSA(Prehashed(hashes.SHA256()))
         )
-
-        return SignatureData(
-            document_hash_hex=document_hash.hex(),
-            signature_hex=signature.hex()
-        )
     
-    def verify_signature(
-        self,
-        public_pem_hex: str,
-        document: bytes,
-        signature_hex: str
+    def _verify_hash_signature(
+        self, 
+        public_key, 
+        document_hash: bytes, 
+        signature: bytes
     ) -> bool:
-        # Convert the public key to bytes
-        public_pem = bytes.fromhex(public_pem_hex)
-        signature = bytes.fromhex(signature_hex)
-
-        # Load the public key
-        public_key = serialization.load_pem_public_key(public_pem)
-        
         try:
             public_key.verify(
                 signature,
-                document,
-                ec.ECDSA(hashes.SHA256())
+                document_hash,
+                ec.ECDSA(Prehashed(hashes.SHA256()))
             )
             return True
         except InvalidSignature:
